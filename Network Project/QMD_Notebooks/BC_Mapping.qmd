@@ -1,0 +1,255 @@
+---
+title: "Urban"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(data.table)     
+library(dplyr)          
+library(sf)             
+library(rnaturalearth)  
+library(leaflet)        
+library(htmlwidgets)    
+```
+
+```{r}
+canada_perf <- fread("/Users/user/ookla-analytics-project/canada_performance.csv")
+
+glimpse(canada_perf)
+```
+
+```{r}
+bc_data <- canada_perf %>%
+  filter(
+    latitude >= 48 & latitude <= 60,
+    longitude >= -139 & longitude <= -114
+  )
+```
+
+```{r}
+# Dataset overview
+colnames(bc_data)
+
+# Quick description of each column
+data.frame(
+  Column = names(bc_data),
+  Type = sapply(bc_data, class),
+  Missing_Values = sapply(bc_data, function(x) sum(is.na(x))),
+  Sample_Value = sapply(bc_data, function(x) as.character(x[1]))
+)
+```
+
+```{r}
+# 1. Fast rough BC bounding box filter1
+bc_bbox <- canada_perf %>%
+  filter(
+    latitude >= 48.25 & latitude <= 60.00,
+    longitude >= -139.10 & longitude <= -114.05
+  )
+
+# 2. Convert filtered points to spatial points
+bc_points <- st_as_sf(
+  bc_bbox,
+  coords = c("longitude", "latitude"),
+  crs = 4326,
+  remove = FALSE
+)
+
+# 3. Load Canadian province boundaries
+canada_provinces <- ne_states(country = "Canada", returnclass = "sf")
+
+# 4. Isolate British Columbia boundary
+bc_boundary <- canada_provinces %>%
+  filter(name == "British Columbia")
+
+# 5. Keep only rows truly inside BC
+bc_data <- st_join(bc_points, bc_boundary, join = st_within) %>%
+  filter(!is.na(name)) %>%
+  st_drop_geometry()
+
+# 6. Check result
+cat("Rows in rough BC bbox:", nrow(bc_bbox), "\n")
+cat("Rows inside true BC boundary:", nrow(bc_data), "\n")
+
+summary(bc_data$latitude)
+summary(bc_data$longitude)
+```
+
+```{r}
+install.packages(
+  "rnaturalearthhires",
+  repos = "https://ropensci.r-universe.dev"
+)
+```
+
+```{r}
+
+bc_map_data <- bc_data %>%
+  mutate(
+    speed_category = case_when(
+      avg_d_kbps >= 150000 ~ "Excellent: 150+ Mbps",
+      avg_d_kbps >= 80000  ~ "Strong: 80-150 Mbps",
+      avg_d_kbps >= 30000  ~ "Moderate: 30-80 Mbps",
+      TRUE ~ "Weak: <30 Mbps"
+    ),
+    point_radius = case_when(
+      tests >= 500 ~ 6,
+      tests >= 200 ~ 5,
+      tests >= 50  ~ 4,
+      TRUE ~ 3
+    )
+  )
+
+speed_pal <- colorFactor(
+  palette = c("darkgreen", "green", "orange", "red"),
+  levels = c(
+    "Excellent: 150+ Mbps",
+    "Strong: 80-150 Mbps",
+    "Moderate: 30-80 Mbps",
+    "Weak: <30 Mbps"
+  )
+)
+
+# Save map as object
+bc_map <- leaflet(bc_map_data) %>%
+  
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  
+  addCircleMarkers(
+    lng = ~longitude.x,
+    lat = ~latitude.x,
+    radius = ~point_radius,
+    stroke = TRUE,
+    weight = 0.3,
+    color = "white",
+    fillColor = ~speed_pal(speed_category),
+    fillOpacity = 0.65,
+    
+    popup = ~paste(
+      "<b>Download:</b>", round(avg_d_kbps / 1000, 1), "Mbps",
+      "<br><b>Upload:</b>", round(avg_u_kbps / 1000, 1), "Mbps",
+      "<br><b>Latency:</b>", round(avg_lat_ms, 1), "ms",
+      "<br><b>Tests:</b>", tests,
+      "<br><b>Devices:</b>", devices
+    )
+  ) %>%
+  
+  addLegend(
+    position = "bottomright",
+    pal = speed_pal,
+    values = ~speed_category,
+    title = "Download Speed",
+    opacity = 0.9
+  ) %>%
+  
+  addControl(
+    html = "<b>BC Mobile Network Performance</b><br>Ookla speed test points inside BC",
+    position = "topleft"
+  )
+
+# Display map
+bc_map
+
+# Save interactive HTML widget
+saveWidget(
+  bc_map,
+  file = "/Users/user/Desktop/Project/Network/bc_mobile_network_map.html",
+  selfcontained = TRUE
+)
+```
+
+```{r}
+bc_latency_data <- bc_data %>%
+  mutate(
+    latency_category = case_when(
+      avg_lat_ms <= 20 ~ "Excellent: <20 ms",
+      avg_lat_ms <= 40 ~ "Good: 20-40 ms",
+      avg_lat_ms <= 70 ~ "Moderate: 40-70 ms",
+      TRUE ~ "High: 70+ ms"
+    ),
+    point_radius = case_when(
+      tests >= 500 ~ 6,
+      tests >= 200 ~ 5,
+      tests >= 50  ~ 4,
+      TRUE ~ 3
+    )
+  )
+
+latency_pal <- colorFactor(
+  palette = c("darkgreen", "green", "orange", "red"),
+  levels = c(
+    "Excellent: <20 ms",
+    "Good: 20-40 ms",
+    "Moderate: 40-70 ms",
+    "High: 70+ ms"
+  )
+)
+
+bc_latency_map <- leaflet(bc_latency_data) %>%
+  
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  
+  addCircleMarkers(
+    lng = ~longitude.x,
+    lat = ~latitude.x,
+    radius = ~point_radius,
+    stroke = TRUE,
+    weight = 0.3,
+    color = "white",
+    fillColor = ~latency_pal(latency_category),
+    fillOpacity = 0.65,
+    
+    popup = ~paste(
+      "<b>Latency:</b>", round(avg_lat_ms, 1), "ms",
+      "<br><b>Download:</b>", round(avg_d_kbps / 1000, 1), "Mbps",
+      "<br><b>Upload:</b>", round(avg_u_kbps / 1000, 1), "Mbps",
+      "<br><b>Tests:</b>", tests,
+      "<br><b>Devices:</b>", devices
+    )
+  ) %>%
+  
+  addLegend(
+    position = "bottomright",
+    pal = latency_pal,
+    values = ~latency_category,
+    title = "Latency",
+    opacity = 0.9
+  ) %>%
+  
+  addControl(
+    html = "<b>BC Mobile Network Latency</b><br>Lower latency indicates faster network response",
+    position = "topleft"
+  )
+
+bc_latency_map
+
+saveWidget(
+  bc_latency_map,
+  file = "/Users/user/Desktop/Project/Network/bc_mobile_latency_map.html",
+  selfcontained = TRUE
+)
+```
+
+```{r}
+colnames(bc_data)
+```
+
+```{r}
+BC_clean <- bc_data %>%
+  select(
+    quadkey,
+    avg_d_kbps,
+    avg_u_kbps,
+    avg_lat_ms,
+    tests,
+    devices,
+    latitude = latitude.x,
+    longitude = longitude.x,
+    province = name
+  )
+```
+
+```{r}
+write.csv(BC_clean, "BC_clean.csv", row.names = FALSE)
+```
